@@ -1,0 +1,437 @@
+
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>21127469 - Phát hiện Biên cạnh Video</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body, html {
+            height: 100%;
+            margin: 0;
+            overflow: hidden;
+        }
+        .app-container {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            padding: 10px;
+        }
+        .main-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .video-container {
+            flex: 1;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            justify-content: center;
+            align-items: center;
+            min-height: 0;
+        }
+        .video-wrapper, .canvas-wrapper {
+            position: relative;
+            height: 100%;
+            max-height: 100%;
+            display: flex;
+            flex-direction: column;
+            max-width: 45%;
+        }
+        .media-container {
+            position: relative;
+            height: calc(100% - 30px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .label {
+            font-weight: bold;
+            margin-bottom: 5px;
+            text-align: center;
+        }
+        #video, #canvas, #processingCanvas {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+        }
+        #processingCanvas {
+            display: none;
+        }
+        .controls {
+            padding: 10px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .info-text {
+            font-size: 0.8rem;
+            text-align: center;
+            margin-top: 5px;
+        }
+        .perf-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            margin-top: 5px;
+        }
+
+        /* Responsive layout adjustments */
+        @media (max-width: 768px) {
+            .video-container {
+                flex-direction: column;
+            }
+            .video-wrapper, .canvas-wrapper {
+                max-width: 100%;
+                width: 100%;
+                height: 45%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="app-container bg-gray-100">
+        <h1 class="text-2xl font-bold text-center mb-2">Ứng dụng Phát hiện Biên cạnh Video</h1>
+        <p class="text-center mb-3 text-gray-600">Võ Thanh Tú - 21127469</p>
+        
+        <div class="main-content">
+            <div class="video-container">
+                <div class="video-wrapper">
+                    <div class="label">Video Gốc</div>
+                    <div class="media-container">
+                        <video id="video" controls class="border border-gray-300"></video>
+                    </div>
+                </div>
+                
+                <div class="canvas-wrapper">
+                    <div class="label">Biên cạnh</div>
+                    <div class="media-container">
+                        <canvas id="canvas" class="border border-gray-300"></canvas>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="controls">
+                <input type="file" id="videoInput" accept="video/*" class="p-2 border border-gray-300 rounded">
+                <button id="startBtn" class="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded">Bắt đầu</button>
+                
+                <div class="perf-controls">
+                    <label for="processingScale" class="text-sm">Mức độ chi tiết:</label>
+                    <select id="processingScale" class="p-1 border border-gray-300 rounded">
+                        <option value="1">Cao (100%)</option>
+                        <option value="0.75">Trung bình cao (75%)</option>
+                        <option value="0.5" selected>Trung bình (50%)</option>
+                        <option value="0.33">Thấp (33%)</option>
+                        <option value="0.25">Rất thấp (25%)</option>
+                    </select>
+                    
+                    <label for="threshold" class="text-sm ml-2">Ngưỡng biên:</label>
+                    <input type="range" id="threshold" min="10" max="100" value="40" class="w-24">
+                    <span id="thresholdValue" class="text-sm">40</span>
+                </div>
+            </div>
+            
+            <div id="dimensions" class="info-text text-gray-600"></div>
+            <div id="performance" class="info-text text-gray-600"></div>
+            <div id="status" class="info-text text-blue-600"></div>
+        </div>
+    </div>
+    
+    <!-- Canvas ẩn để xử lý trung gian -->
+    <canvas id="processingCanvas"></canvas>
+
+    <script>
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const processingCanvas = document.getElementById('processingCanvas');
+        const ctx = canvas.getContext('2d');
+        const processingCtx = processingCanvas.getContext('2d');
+        
+        const videoInput = document.getElementById('videoInput');
+        const startBtn = document.getElementById('startBtn');
+        const dimensionsDisplay = document.getElementById('dimensions');
+        const performanceDisplay = document.getElementById('performance');
+        const statusDisplay = document.getElementById('status');
+        const processingScaleSelect = document.getElementById('processingScale');
+        const thresholdSlider = document.getElementById('threshold');
+        const thresholdValue = document.getElementById('thresholdValue');
+        
+        let processingScale = parseFloat(processingScaleSelect.value);
+        let threshold = parseInt(thresholdSlider.value);
+        let lastProcessingTime = 0;
+        let frameCount = 0;
+        let lastFrameTime = 0;
+        let frameSkip = 0;  // Số frame bỏ qua giữa mỗi lần xử lý
+        let skipCounter = 0; // Đếm số frame đã bỏ qua
+        
+        // Cập nhật giá trị ngưỡng khi thanh trượt thay đổi
+        thresholdSlider.addEventListener('input', function() {
+            threshold = parseInt(this.value);
+            thresholdValue.textContent = threshold;
+        });
+        
+        // Cập nhật tỷ lệ xử lý khi select thay đổi
+        processingScaleSelect.addEventListener('change', function() {
+            processingScale = parseFloat(this.value);
+            updateProcessingCanvasSize();
+        });
+        
+        // Đảm bảo kích thước canvas hiển thị đúng video gốc
+        function updateCanvasSize() {
+            if (video.videoWidth && video.videoHeight) {
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                updateProcessingCanvasSize();
+                dimensionsDisplay.textContent = `Kích thước video: ${video.videoWidth} x ${video.videoHeight} px`;
+            }
+        }
+        
+        // Cập nhật kích thước canvas xử lý dựa trên tỷ lệ hiện tại
+        function updateProcessingCanvasSize() {
+            if (video.videoWidth && video.videoHeight) {
+                processingCanvas.width = Math.floor(video.videoWidth * processingScale);
+                processingCanvas.height = Math.floor(video.videoHeight * processingScale);
+            }
+        }
+        
+        // Cập nhật metrics hiệu suất
+        function updatePerformanceMetrics(processingTime) {
+            const now = performance.now();
+            frameCount++;
+            
+            if (now - lastFrameTime >= 1000) { // Mỗi giây cập nhật một lần
+                const fps = Math.round((frameCount * 1000) / (now - lastFrameTime));
+                performanceDisplay.textContent = `Hiệu suất: ${fps} FPS | Thời gian xử lý: ${processingTime.toFixed(1)}ms`;
+                frameCount = 0;
+                lastFrameTime = now;
+                
+                // Tự động điều chỉnh tốc độ xử lý dựa trên hiệu suất
+                if (processingTime > 50) {
+                    frameSkip = Math.min(5, frameSkip + 1); // Tăng số frame bỏ qua nếu xử lý quá chậm
+                } else if (processingTime < 20 && frameSkip > 0) {
+                    frameSkip = Math.max(0, frameSkip - 1); // Giảm số frame bỏ qua nếu xử lý đủ nhanh
+                }
+            }
+        }
+        
+        // Theo dõi thay đổi kích thước của trình duyệt
+        window.addEventListener('resize', function() {
+            // Đảm bảo canvas luôn có cùng tỷ lệ với video nhưng vừa với màn hình
+            updateCanvasSize();
+        });
+        
+        // Tải video mặc định khi trang được tải
+        function loadDefaultVideo() {
+            const defaultVideoPath = "./114.mp4";
+            statusDisplay.textContent = "Đang tải video mặc định...";
+            
+            // Kiểm tra xem video có tồn tại không
+            fetch(defaultVideoPath, { method: 'HEAD' })
+                .then(response => {
+                    if (response.ok) {
+                        // Video tồn tại, tải và phát
+                        video.src = defaultVideoPath;
+                        video.addEventListener('loadedmetadata', function onceLoaded() {
+                            updateCanvasSize();
+                            statusDisplay.textContent = "Video mặc định đã được tải thành công";
+                            video.removeEventListener('loadedmetadata', onceLoaded);
+                        });
+                        
+                        video.addEventListener('error', function(e) {
+                            statusDisplay.textContent = "Lỗi khi phát video mặc định: " + (video.error ? video.error.message : "Lỗi không xác định");
+                        });
+                        
+                    } else {
+                        // Video không tồn tại
+                        statusDisplay.textContent = "Không tìm thấy video mặc định ở đường dẫn " + defaultVideoPath;
+                    }
+                })
+                .catch(error => {
+                    statusDisplay.textContent = "Lỗi khi kiểm tra video mặc định: " + error.message;
+                });
+        }
+        
+        // Khi người dùng chọn tệp video
+        videoInput.addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (file) {
+                statusDisplay.textContent = "Đang tải video người dùng...";
+                const videoUrl = URL.createObjectURL(file);
+                video.src = videoUrl;
+                
+                // Cập nhật kích thước canvas khi metadata video được tải
+                video.addEventListener('loadedmetadata', function onceLoaded() {
+                    updateCanvasSize();
+                    statusDisplay.textContent = "Video người dùng đã được tải thành công";
+                    video.removeEventListener('loadedmetadata', onceLoaded);
+                });
+            }
+        });
+        
+        // Khi nút bắt đầu được nhấn
+        startBtn.addEventListener('click', function() {
+            if (video.src) {
+                video.play();
+                statusDisplay.textContent = "Đang phát video và xử lý biên cạnh...";
+            } else {
+                statusDisplay.textContent = "Vui lòng chọn video trước khi bắt đầu";
+            }
+        });
+        
+        // Tạo phiên bản tối ưu của thuật toán Sobel
+        function detectEdges(sourceCtx, destCtx, width, height, threshold) {
+            const startTime = performance.now();
+            
+            // Lấy dữ liệu hình ảnh từ canvas xử lý
+            const imageData = sourceCtx.getImageData(0, 0, width, height);
+            const data = imageData.data;
+            
+            // Sử dụng Uint8Array thay vì Uint8ClampedArray để tối ưu hiệu suất
+            const grayscale = new Uint8Array(width * height);
+            
+            // Chuyển đổi sang grayscale 
+            for (let i = 0, j = 0; i < data.length; i += 4, j++) {
+                // Công thức grayscale tối ưu: Sử dụng dịch bit thay vì nhân
+                grayscale[j] = (data[i] * 76 + data[i+1] * 150 + data[i+2] * 30) >> 8;
+            }
+            
+            // Tạo mảng mới để lưu dữ liệu biên cạnh
+            const output = new Uint8ClampedArray(data.length);
+            
+            // Áp dụng toán tử Sobel tối ưu
+            const w = width;
+            for (let y = 1; y < height - 1; y++) {
+                const rowOffset = y * w;
+                for (let x = 1; x < width - 1; x++) {
+                    const offset = rowOffset + x;
+                    
+                    // Tính gradient theo phiên bản tối ưu (tránh phép nhân)
+                    const gx = 
+                        grayscale[offset - w - 1] + 
+                        (grayscale[offset - 1] << 1) + 
+                        grayscale[offset + w - 1] - 
+                        grayscale[offset - w + 1] - 
+                        (grayscale[offset + 1] << 1) - 
+                        grayscale[offset + w + 1];
+                    
+                    const gy = 
+                        grayscale[offset - w - 1] + 
+                        (grayscale[offset - w] << 1) + 
+                        grayscale[offset - w + 1] - 
+                        grayscale[offset + w - 1] - 
+                        (grayscale[offset + w] << 1) - 
+                        grayscale[offset + w + 1];
+                    
+                    // Tính toán cường độ biên cạnh sử dụng phương pháp nhanh
+                    // |gx| + |gy| thay vì sqrt(gx*gx + gy*gy)
+                    const mag = Math.min(255, Math.abs(gx) + Math.abs(gy));
+                    
+                    // Áp dụng ngưỡng
+                    const value = mag > threshold ? 255 : 0;
+                    
+                    const pixelIdx = offset << 2; // offset * 4
+                    output[pixelIdx] = value;     // R
+                    output[pixelIdx + 1] = value; // G
+                    output[pixelIdx + 2] = value; // B
+                    output[pixelIdx + 3] = 255;   // A
+                }
+            }
+            
+            // Vẽ kết quả biên cạnh lên canvas đích
+            const outputImageData = new ImageData(output, width, height);
+            sourceCtx.putImageData(outputImageData, 0, 0);
+            
+            // Mở rộng kết quả lên canvas hiển thị cuối cùng
+            destCtx.drawImage(processingCanvas, 0, 0, width, height, 0, 0, destCtx.canvas.width, destCtx.canvas.height);
+            
+            // Tính thời gian xử lý
+            const processingTime = performance.now() - startTime;
+            return processingTime;
+        }
+        
+        // Xử lý video và tạo biên cạnh
+        function processVideo() {
+            // Bỏ qua frame nếu cần để tăng hiệu suất
+            if (skipCounter < frameSkip) {
+                skipCounter++;
+                requestAnimationFrame(processVideo);
+                return;
+            }
+            skipCounter = 0;
+            
+            // Kiểm tra xem video có kích thước chưa
+            if (video.videoWidth === 0 || video.videoHeight === 0) {
+                requestAnimationFrame(processVideo);
+                return;
+            }
+            
+            // Đảm bảo canvas có cùng kích thước với video
+            if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+                updateCanvasSize();
+            }
+            
+            // Vẽ frame hiện tại lên canvas xử lý (đã thu nhỏ để tăng hiệu suất)
+            processingCtx.drawImage(video, 0, 0, processingCanvas.width, processingCanvas.height);
+            
+            // Áp dụng thuật toán phát hiện biên cạnh
+            const processingTime = detectEdges(
+                processingCtx, 
+                ctx, 
+                processingCanvas.width, 
+                processingCanvas.height, 
+                threshold
+            );
+            
+            // Cập nhật thống kê hiệu suất
+            updatePerformanceMetrics(processingTime);
+            
+            // Tiếp tục xử lý khi video đang phát
+            if (!video.paused && !video.ended) {
+                requestAnimationFrame(processVideo);
+            }
+        }
+        
+        // Xử lý khi video được phát
+        video.addEventListener('play', function() {
+            lastFrameTime = performance.now();
+            frameCount = 0;
+            processVideo();
+        });
+        
+        // Khởi tạo ứng dụng khi trang được tải
+        window.addEventListener('DOMContentLoaded', function() {
+            // Tải video mặc định
+            loadDefaultVideo();
+        });
+    </script>
+<script>window.parent.postMessage({ action: "ready" }, "*"); 
+ 
+window.console = new Proxy(console, {
+  get(target, prop) {
+    if (['log', 'warn', 'error'].includes(prop)) {
+      return new Proxy(target[prop], {
+        apply(fn, thisArg, args) {
+          fn.apply(thisArg, args);
+          window.parent.postMessage({ action: 'console', 
+            type: prop, 
+            args: args.map((arg) => {
+              try {
+                return JSON.stringify(arg).replace(/^["']|["']$/g, '');
+              } catch (e) {
+                return arg;
+              }
+            }) 
+          }, '*');
+        }
+      });
+    }
+    return target[prop];
+  }
+});
+</script></body>
+</html>
